@@ -5,7 +5,7 @@
 #include <stdbool.h>
 
 bool is_in(char c, char *s) {
-    return (bool) strchr(s, c);
+    return c != EOF && strchr(s, c) != NULL;
 }
 
 /* Character buffer operations */
@@ -40,7 +40,7 @@ void buffer_free(buffer this) {
     free(this);
 }
 void buffer_append(buffer this, char c) {
-    if (this->length + 1 == this->size) {
+    if (this->length + 1 >= this->size) {
         this->data = realloc(this->data, this->size += this->size_delta);
         if (!this->data) {
             perror("buffer");
@@ -58,7 +58,10 @@ char *buffer_tocstring(buffer this) {
 }
 char buffer_getc(buffer this) {
     if (buffer_iseof(this)) return EOF;
-    return this->data[++this->read_position];
+    return this->data[this->read_position++];
+}
+void buffer_ff(buffer this) {
+    ++this->read_position;
 }
 char buffer_peekc(buffer this) {
     if (buffer_iseof(this)) return EOF;
@@ -73,18 +76,25 @@ void buffer_readsize(buffer dst, buffer src, size_t size) {
     }
 }
 void buffer_readseg(buffer dst, buffer src, char *allowed) {
-    if (src->read_position >= src->length) return;
-    char ch = buffer_getc(src);
-    while (!is_in(ch, allowed)) ch = buffer_getc(src);
-    while (is_in(ch, allowed)) {
-        buffer_append(dst, ch);
-        ch = buffer_getc(src);
+    if (buffer_iseof(src)) return;
+    char c;
+    while (c = buffer_peekc(src), c != EOF && is_in(c, allowed)) {
+        buffer_append(dst, c);
+        buffer_ff(src);
     }
 }
 void buffer_readword(buffer dest, buffer src) {
-    char c = buffer_getc(src);
-    while (!(isblank(c) || c == EOF)) {
+    char c;
+    while (c = buffer_peekc(src), c != EOF && (isalnum(c) || is_in(c, "_-"))) {
         buffer_append(dest, c);
+        buffer_ff(src);
+    }
+}
+void buffer_readline(buffer dest, buffer src) {
+    char c;
+    while (c = buffer_peekc(src), !is_in(c, "\n\r") && c != EOF) {
+        buffer_append(dest, c);
+        buffer_ff(src);
     }
 }
 char buffer_getpos(buffer this, size_t pos) {
@@ -110,7 +120,6 @@ enum TOKEN_TYPE {
 enum FORWARD_LOOK_TYPE {
     LL_0,
     LL_1,
-    LL_MULTI,
 };
 typedef struct token_s {
     char *display_name;
@@ -119,19 +128,21 @@ typedef struct token_s {
     char *detection_arg;
     char *detection_arg2;
 } token_type;
-token_type token_types[10] = {
+token_type token_types[11] = {
     { "null",           TYPE_WORD,      LL_0,       " \t\v\f\n\r",  NULL },
     { "macro",          TYPE_LINE,      LL_0,       "#",            NULL },
-    { "operator",       TYPE_CHARSET,   LL_0,       "+-*/<>=",      NULL },
-    { "delimeter",      TYPE_CHAR,      LL_0,       "()[]{}",       NULL },
-    { "c_comment",      TYPE_LINE,      LL_1,       "//",           NULL },
-    { "cxx_comment",    TYPE_MULTIWORD, LL_1,       "/*",           "*/" },
-    { "char_literal",   TYPE_MULTIWORD, LL_0,       "'",            "'"  },
-    { "string_literal", TYPE_MULTIWORD, LL_0,       """",           """" },
+    { "delimeter",      TYPE_CHAR,      LL_0,       ",;",            NULL },
+    { "c_comment",      TYPE_LINE,      LL_1,       "////",         NULL },
+    { "cxx_comment",    TYPE_MULTIWORD, LL_1,       "/**/",         NULL },
+    { "operator",       TYPE_CHARSET,   LL_0,       "+-*/<>=!&",      NULL },
+    { "bracklet",       TYPE_CHAR,      LL_0,       "()[]{}",       NULL },
+    { "char_literal",   TYPE_MULTIWORD, LL_0,       "'",            NULL  },
+    { "string_literal", TYPE_MULTIWORD, LL_0,       """",           NULL },
     { "number_literal", TYPE_WORD,      LL_0,       "1234567890.",  NULL },
-    { "identifier",     TYPE_WORD,      LL_MULTI,   NULL,           NULL },
+    { "identifier",     TYPE_WORD,      LL_0,       NULL,           NULL },
 };
-bool get_token(buffer buf, buffer out) {
+size_t get_token(buffer buf, buffer out) {
+    while (is_in(buffer_peekc(buf), token_types[0].detection_arg)) buffer_getc(buf);
     for (size_t i = 0; i < COUNT(token_types); ++i) {
         token_type testing_token_type = token_types[i];
         bool start_detected;
@@ -139,25 +150,26 @@ bool get_token(buffer buf, buffer out) {
         // detect token start
         switch (testing_token_type.fwd) {
             case LL_0:
-                if (is_in(buffer_peekc(buf), testing_token_type.detection_arg)) start_detected = true;
-                else start_detected = false;
+                if (!testing_token_type.detection_arg) {
+                    start_detected = true;
+                } else if (is_in(buffer_peekc(buf), testing_token_type.detection_arg)) {
+                    start_detected = true;
+                } else {
+                    start_detected = false;
+                }
                 break;
             case LL_1:
                 start_detected = true;
-                for (size_t i = 0; i < strlen(testing_token_type.detection_arg); ++i) {
+                for (size_t i = 0; i < 2; ++i) {
                     if (((char *)testing_token_type.detection_arg)[i] != buffer_getpos(buf, i)) {
                         start_detected = false;
                         break;
                     }
                 }
                 break;
-            default:
-                // as long as there is only one LL_MULTI at th end
-                start_detected = true;
-                break;
         }
         if (!start_detected) continue;
-
+        // printf("Detect start token type %s: %c\n", testing_token_type.display_name, *buffer_tocstring(buf));
         // detect token end
         bool end_detected = true;
         char *pos;
@@ -176,26 +188,40 @@ bool get_token(buffer buf, buffer out) {
                 buffer_readword(out, buf);
                 break;
             case TYPE_LINE:
-                buffer_readseg(out, buf, "\n\r");
+                buffer_readline(out, buf);
                 break;
             case TYPE_MULTIWORD:
-                pos = strstr(buffer_tocstring(buf), testing_token_type.detection_arg2);
-                if (pos) {
-                    size_t size = pos - buffer_tocstring(buf) + 1;
-                    buffer_readsize(out, buf, size);
+                if (testing_token_type.fwd == LL_0) {
+                    pos = strstr(buffer_tocstring(buf) + 1, testing_token_type.detection_arg2);
+                    while (pos && *(pos+1) == testing_token_type.detection_arg2[0])
+                        pos = strstr(pos + 1, testing_token_type.detection_arg2);
+                    if (pos) {
+                        size_t size = pos - buffer_tocstring(buf) + 1;
+                        buffer_readsize(out, buf, size);
+                    } else {
+                        end_detected = false;
+                        printf("not detected 1\n");
+                    }
                 } else {
-                    end_detected = false;
+                    pos = strstr(buffer_tocstring(buf), testing_token_type.detection_arg2 + 2);
+                    if (pos) {
+                        size_t size = pos - buffer_tocstring(buf) + 1;
+                        buffer_readsize(out, buf, size);
+                    } else {
+                        end_detected = false;
+                        printf("not detected 2\n");
+                    }
                 }
                 break;
         }
         if (!end_detected) continue;
-
-        return true;
+        return i;
     }
-    return false;
+    return -1;
 }
 
 int main(void) {
+    // read
     buffer program = buffer_new(0);
     char c = 0;
     while ((c = getchar()) != EOF) {
@@ -205,15 +231,17 @@ int main(void) {
         }
         buffer_append(program, c);
     }
+    // printf("%s\n", buffer_tocstring(program));
+    // tokenize
     buffer token;
+    size_t type;
     while(!buffer_iseof(program)) {
         token = buffer_new(32);
-        if (get_token(program, token)) {
-            printf("token: %s\n", buffer_tocstring(token));
+        if ((type = get_token(program, token))) {
+            printf("%s: \t\t%s\n", token_types[type].display_name, buffer_tocstring(token));
             buffer_free(token);
             token = buffer_new(32);
         } else break;
     }
     buffer_free(token);
-    printf("Ended.\n");
 }
