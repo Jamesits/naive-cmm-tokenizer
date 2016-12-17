@@ -9,12 +9,14 @@
 #include <ctype.h>
 #include <stdbool.h>
 
+// if char c is in string s
 bool is_in(char c, char *s) {
     return c != EOF && strchr(s, c) != NULL;
 }
 
 /* Character buffer operations */
 #define BUFFER_DEFAULT_DELTA 32
+// this is basically an string with automatic memory management
 struct buffer_s {
     char *data;
     size_t size;
@@ -23,6 +25,7 @@ struct buffer_s {
     size_t read_position;
 };
 typedef struct buffer_s *buffer;
+// init new buffer
 buffer buffer_new(size_t size_delta) {
     buffer b = (buffer)malloc(sizeof(struct buffer_s));
     if (!b) {
@@ -40,10 +43,12 @@ buffer buffer_new(size_t size_delta) {
     b->read_position = 0;
     return b;
 }
+// dispose buffer
 void buffer_free(buffer this) {
     if (this->data) free(this->data);
     free(this);
 }
+// append a char
 void buffer_append(buffer this, char c) {
     if (this->length + 1 >= this->size) {
         this->data = realloc(this->data, this->size += this->size_delta);
@@ -55,23 +60,29 @@ void buffer_append(buffer this, char c) {
     this->data[this->length++] = c;
     this->data[this->length] = 0;
 }
+// if reached eof
 bool buffer_iseof(buffer this) {
     return (this->read_position >= this->length);
 }
+// get its char* content
 char *buffer_tocstring(buffer this) {
     return this->data + this->read_position;
 }
+// read first char
 char buffer_getc(buffer this) {
     if (buffer_iseof(this)) return EOF;
     return this->data[this->read_position++];
 }
+// fast forward (skip) one char
 void buffer_ff(buffer this) {
     ++this->read_position;
 }
+// peek one char without taking out of it
 char buffer_peekc(buffer this) {
     if (buffer_iseof(this)) return EOF;
     return this->data[this->read_position];
 }
+// read a fixed length from src to dst
 void buffer_readsize(buffer dst, buffer src, size_t size) {
     char ch;
     while (size-- > 0) {
@@ -80,6 +91,7 @@ void buffer_readsize(buffer dst, buffer src, size_t size) {
         buffer_append(dst, ch);
     }
 }
+// read chars from src to dst as long as they are in allowed char list
 void buffer_readseg(buffer dst, buffer src, char *allowed) {
     if (buffer_iseof(src)) return;
     char c;
@@ -88,6 +100,9 @@ void buffer_readseg(buffer dst, buffer src, char *allowed) {
         buffer_ff(src);
     }
 }
+// read a word
+// note: to prevent parse failure when parsing something like
+// array[i].elem, char `[].` is taken as a part of word.
 void buffer_readword(buffer dest, buffer src) {
     char c;
     while (c = buffer_peekc(src), c != EOF && (isalnum(c) || is_in(c, "_[]."))) {
@@ -95,6 +110,7 @@ void buffer_readword(buffer dest, buffer src) {
         buffer_ff(src);
     }
 }
+// read a line
 void buffer_readline(buffer dest, buffer src) {
     char c;
     while (c = buffer_peekc(src), !is_in(c, "\n\r") && c != EOF) {
@@ -102,15 +118,16 @@ void buffer_readline(buffer dest, buffer src) {
         buffer_ff(src);
     }
 }
+// get a char at position x
 char buffer_getpos(buffer this, size_t pos) {
     if (this->read_position + pos >= this->length) return EOF;
     return this->data[this->read_position + pos];
 }
+// return how much can still be read
 size_t buffer_size(buffer this) {
     return this->length - this->read_position;
 }
 
-/* string operation */
 #define COUNT(X) (sizeof(X) / sizeof(X[0]))
 
 /* token classification */
@@ -132,7 +149,9 @@ typedef struct token_s {
     enum FORWARD_LOOK_TYPE fwd;     // how much chars to peek to detect this token
     char *start_chars;              // for TYPE_MULTIWORD, it is a string indicating its start;
                                     // for other types, any char in this string indicates its start.
-    char *escape_char;                // for TYPE_MULTIWORD, it is a string indicating its escape char
+                                    // if this is NULL, then everything will be matched.
+    char *escape_char;              // for TYPE_MULTIWORD, it is a string indicating its escape char;
+                                    // for other types, this is ignored.
 } token_type;
 token_type token_types[11] = {
     { "null",   TYPE_WORD,      LL_0,       " \t\v\f\n\r",  NULL }, // null character
@@ -147,6 +166,8 @@ token_type token_types[11] = {
     { "num",    TYPE_WORD,      LL_0,       "1234567890.",  NULL }, // number
     { "id",     TYPE_WORD,      LL_0,       NULL,           NULL }, // identifier (this is a wildcard match)
 };
+
+// get next token from buf
 size_t get_token(buffer buf, buffer out) {
     while (is_in(buffer_peekc(buf), token_types[0].start_chars)) buffer_getc(buf);
     for (size_t i = 0; i < COUNT(token_types); ++i) {
@@ -229,8 +250,8 @@ size_t get_token(buffer buf, buffer out) {
 }
 
 int main(void) {
-    // read
-    buffer program = buffer_new(0);
+    // read program
+    buffer program = buffer_new(128);
     char c = 0;
     while ((c = getchar()) != EOF) {
         if (c == 0) {
@@ -251,5 +272,8 @@ int main(void) {
             token = buffer_new(32);
         } else break;
     }
+
+    // cleanup
     buffer_free(token);
+    buffer_free(program);
 }
