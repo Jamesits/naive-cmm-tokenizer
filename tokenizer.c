@@ -1,5 +1,5 @@
 /*
-    Naive C tokenizer
+    Naive C-- tokenizer
     by James Swineson
     2016-12-17
 */
