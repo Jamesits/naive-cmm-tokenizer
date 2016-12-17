@@ -1,3 +1,8 @@
+/*
+    Naive C tokenizer
+    by James Swineson
+    2016-12-17
+*/
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,7 +90,7 @@ void buffer_readseg(buffer dst, buffer src, char *allowed) {
 }
 void buffer_readword(buffer dest, buffer src) {
     char c;
-    while (c = buffer_peekc(src), c != EOF && (isalnum(c) || is_in(c, "_-"))) {
+    while (c = buffer_peekc(src), c != EOF && (isalnum(c) || is_in(c, "_[]."))) {
         buffer_append(dest, c);
         buffer_ff(src);
     }
@@ -122,27 +127,28 @@ enum FORWARD_LOOK_TYPE {
     LL_1,
 };
 typedef struct token_s {
-    char *display_name;
-    enum TOKEN_TYPE type;
-    enum FORWARD_LOOK_TYPE fwd;
-    char *detection_arg;
-    char *detection_arg2;
+    char *display_name;             // name
+    enum TOKEN_TYPE type;           // how a token end
+    enum FORWARD_LOOK_TYPE fwd;     // how much chars to peek to detect this token
+    char *start_chars;              // for TYPE_MULTIWORD, it is a string indicating its start;
+                                    // for other types, any char in this string indicates its start.
+    char *escape_char;                // for TYPE_MULTIWORD, it is a string indicating its escape char
 } token_type;
 token_type token_types[11] = {
-    { "null",           TYPE_WORD,      LL_0,       " \t\v\f\n\r",  NULL },
-    { "macro",          TYPE_LINE,      LL_0,       "#",            NULL },
-    { "delimeter",      TYPE_CHAR,      LL_0,       ",;",            NULL },
-    { "c_comment",      TYPE_LINE,      LL_1,       "////",         NULL },
-    { "cxx_comment",    TYPE_MULTIWORD, LL_1,       "/**/",         NULL },
-    { "operator",       TYPE_CHARSET,   LL_0,       "+-*/<>=!&",      NULL },
-    { "bracklet",       TYPE_CHAR,      LL_0,       "()[]{}",       NULL },
-    { "char_literal",   TYPE_MULTIWORD, LL_0,       "'",            NULL  },
-    { "string_literal", TYPE_MULTIWORD, LL_0,       """",           NULL },
-    { "number_literal", TYPE_WORD,      LL_0,       "1234567890.",  NULL },
-    { "identifier",     TYPE_WORD,      LL_0,       NULL,           NULL },
+    { "null",   TYPE_WORD,      LL_0,       " \t\v\f\n\r",  NULL }, // null character
+    { "macro",  TYPE_LINE,      LL_0,       "#",            NULL }, // macros (#define, etc.)
+    { "delim",  TYPE_CHAR,      LL_0,       ",;",           NULL }, // delimeter
+    { "cxcom",  TYPE_LINE,      LL_1,       "////",         NULL }, // C++ style comment
+    { "ccom",   TYPE_MULTIWORD, LL_1,       "/**/",         NULL }, // C style comment
+    { "opt",    TYPE_CHARSET,   LL_0,       "+-*/<>=!&|?:", NULL }, // operator
+    { "brk",    TYPE_CHAR,      LL_0,       "(){}",         NULL }, // bracklet
+    { "char",   TYPE_MULTIWORD, LL_0,       "'",            "\\" }, // character literal
+    { "str",    TYPE_MULTIWORD, LL_0,       "\"",           "\\" }, // string literal
+    { "num",    TYPE_WORD,      LL_0,       "1234567890.",  NULL }, // number
+    { "id",     TYPE_WORD,      LL_0,       NULL,           NULL }, // identifier (this is a wildcard match)
 };
 size_t get_token(buffer buf, buffer out) {
-    while (is_in(buffer_peekc(buf), token_types[0].detection_arg)) buffer_getc(buf);
+    while (is_in(buffer_peekc(buf), token_types[0].start_chars)) buffer_getc(buf);
     for (size_t i = 0; i < COUNT(token_types); ++i) {
         token_type testing_token_type = token_types[i];
         bool start_detected;
@@ -150,9 +156,9 @@ size_t get_token(buffer buf, buffer out) {
         // detect token start
         switch (testing_token_type.fwd) {
             case LL_0:
-                if (!testing_token_type.detection_arg) {
+                if (!testing_token_type.start_chars) {
                     start_detected = true;
-                } else if (is_in(buffer_peekc(buf), testing_token_type.detection_arg)) {
+                } else if (is_in(buffer_peekc(buf), testing_token_type.start_chars)) {
                     start_detected = true;
                 } else {
                     start_detected = false;
@@ -161,7 +167,7 @@ size_t get_token(buffer buf, buffer out) {
             case LL_1:
                 start_detected = true;
                 for (size_t i = 0; i < 2; ++i) {
-                    if (((char *)testing_token_type.detection_arg)[i] != buffer_getpos(buf, i)) {
+                    if (testing_token_type.start_chars[i] != buffer_getpos(buf, i)) {
                         start_detected = false;
                         break;
                     }
@@ -169,20 +175,20 @@ size_t get_token(buffer buf, buffer out) {
                 break;
         }
         if (!start_detected) continue;
-        // printf("Detect start token type %s: %c\n", testing_token_type.display_name, *buffer_tocstring(buf));
+
         // detect token end
         bool end_detected = true;
         char *pos;
         switch (testing_token_type.type) {
             case TYPE_NULL:
-                buffer_readseg(out, buf, testing_token_type.detection_arg);
+                buffer_readseg(out, buf, testing_token_type.start_chars);
                 end_detected = false; // eat blank chars
                 break;
             case TYPE_CHAR:
                 buffer_readsize(out, buf, 1);
                 break;
             case TYPE_CHARSET:
-                buffer_readseg(out, buf, testing_token_type.detection_arg);
+                buffer_readseg(out, buf, testing_token_type.start_chars);
                 break;
             case TYPE_WORD:
                 buffer_readword(out, buf);
@@ -192,20 +198,22 @@ size_t get_token(buffer buf, buffer out) {
                 break;
             case TYPE_MULTIWORD:
                 if (testing_token_type.fwd == LL_0) {
-                    pos = strstr(buffer_tocstring(buf) + 1, testing_token_type.detection_arg2);
-                    while (pos && *(pos+1) == testing_token_type.detection_arg2[0])
-                        pos = strstr(pos + 1, testing_token_type.detection_arg2);
-                    if (pos) {
-                        size_t size = pos - buffer_tocstring(buf) + 1;
-                        buffer_readsize(out, buf, size);
-                    } else {
-                        end_detected = false;
-                        printf("not detected 1\n");
+                    size_t size;
+                    char c;
+                    end_detected = false;
+                    for (size = 1; (c = buffer_getpos(buf, size)) != EOF; ++size) {
+                        if (c == testing_token_type.escape_char[0]) {
+                            ++size;
+                        } else if (c == testing_token_type.start_chars[0]) {
+                            end_detected = true;
+                            buffer_readsize(out, buf, size + 1);
+                            break;
+                        }
                     }
-                } else {
-                    pos = strstr(buffer_tocstring(buf), testing_token_type.detection_arg2 + 2);
+                } else { // LL(1)
+                    pos = strstr(buffer_tocstring(buf), testing_token_type.start_chars + 2);
                     if (pos) {
-                        size_t size = pos - buffer_tocstring(buf) + 1;
+                        size_t size = pos - buffer_tocstring(buf) + 2;
                         buffer_readsize(out, buf, size);
                     } else {
                         end_detected = false;
@@ -217,7 +225,7 @@ size_t get_token(buffer buf, buffer out) {
         if (!end_detected) continue;
         return i;
     }
-    return -1;
+    return 0;
 }
 
 int main(void) {
@@ -231,14 +239,14 @@ int main(void) {
         }
         buffer_append(program, c);
     }
-    // printf("%s\n", buffer_tocstring(program));
+
     // tokenize
     buffer token;
     size_t type;
     while(!buffer_iseof(program)) {
         token = buffer_new(32);
-        if ((type = get_token(program, token))) {
-            printf("%s: \t\t%s\n", token_types[type].display_name, buffer_tocstring(token));
+        if ((type = get_token(program, token)) && strlen(buffer_tocstring(token))) {
+            printf("%s: \t%s\n", token_types[type].display_name, buffer_tocstring(token));
             buffer_free(token);
             token = buffer_new(32);
         } else break;
