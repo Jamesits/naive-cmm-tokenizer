@@ -1,4 +1,4 @@
-# Naive C tokenizer
+# Naive C-- tokenizer
 
 This is an example tokenizer for a simplified C style language.
 
