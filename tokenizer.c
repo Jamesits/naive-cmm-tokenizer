@@ -137,11 +137,12 @@ enum TOKEN_TYPE {
     TYPE_CHARSET,
     TYPE_WORD,
     TYPE_LINE,
-    TYPE_MULTIWORD
+    TYPE_MULTIWORD,
 };
 enum FORWARD_LOOK_TYPE {
     LL_0,
     LL_1,
+    LL_MULTI,
 };
 typedef struct token_s {
     char *display_name;             // name
@@ -150,7 +151,7 @@ typedef struct token_s {
     char *start_chars;              // for TYPE_MULTIWORD, it is a string indicating its start;
                                     // for other types, any char in this string indicates its start.
                                     // if this is NULL, then everything will be matched.
-    char *escape_char;              // for TYPE_MULTIWORD, it is a string indicating its escape char;
+    char *extra_arg;                // for TYPE_MULTIWORD, it is a string indicating its escape char;
                                     // for other types, this is ignored.
 } token_type;
 token_type token_types[11] = {
@@ -163,7 +164,7 @@ token_type token_types[11] = {
     { "brk",    TYPE_CHAR,      LL_0,       "(){}",         NULL }, // bracklet
     { "char",   TYPE_MULTIWORD, LL_0,       "'",            "\\" }, // character literal
     { "str",    TYPE_MULTIWORD, LL_0,       "\"",           "\\" }, // string literal
-    { "num",    TYPE_WORD,      LL_0,       "1234567890.",  NULL }, // number
+    { "num",    TYPE_WORD,      LL_MULTI,   "1234567890.",  dnum }, // number
     { "id",     TYPE_WORD,      LL_0,       NULL,           NULL }, // identifier (this is a wildcard match)
 };
 
@@ -186,6 +187,7 @@ size_t get_token(buffer buf, buffer out) {
                 }
                 break;
             case LL_1:
+            case LL_MULTI:
                 start_detected = true;
                 for (size_t i = 0; i < 2; ++i) {
                     if (testing_token_type.start_chars[i] != buffer_getpos(buf, i)) {
@@ -212,7 +214,11 @@ size_t get_token(buffer buf, buffer out) {
                 buffer_readseg(out, buf, testing_token_type.start_chars);
                 break;
             case TYPE_WORD:
-                buffer_readword(out, buf);
+                if (testing_token_type.fwd = LL_MULTI) {
+
+                } else {
+                    buffer_readword(out, buf);
+                }
                 break;
             case TYPE_LINE:
                 buffer_readline(out, buf);
@@ -223,7 +229,7 @@ size_t get_token(buffer buf, buffer out) {
                     char c;
                     end_detected = false;
                     for (size = 1; (c = buffer_getpos(buf, size)) != EOF; ++size) {
-                        if (c == testing_token_type.escape_char[0]) {
+                        if (c == testing_token_type.extra_arg[0]) {
                             ++size;
                         } else if (c == testing_token_type.start_chars[0]) {
                             end_detected = true;
